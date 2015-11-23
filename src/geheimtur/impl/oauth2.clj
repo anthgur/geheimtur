@@ -130,21 +130,32 @@
   (when-let [token (fetch-token code provider)]
     (resolve-identity token provider)))
 
+(defn- authorized?
+  [{:keys [query-params session]} providers]
+  (let [{:keys [state code]}            query-params
+        {:keys [return token provider]} (::callback-state session)
+        {:keys [on-success-handler] :as provider-config}
+        (get providers (keyword provider))]
+    (and state token
+         (= state token)
+         code return
+         provider-config
+         [code provider-config return on-success-handler])))
+
 (defn callback-handler
   "Creates an OAuth call-back handler based on a map of OAuth providers.
 
   If authentication flow fails for any reason, the user will be redirected to /unauthorized url."
   [providers]
-  (h/handler
+  (h/before
    ::callback-handler
-   (fn [{:keys [query-params session] :as request}]
-     (let [{:keys [state code]}               query-params
-           {:keys [return token provider]}    (::callback-state session)
-           {:keys [on-success-handler] :as p} (get providers (keyword provider))]
-       (if (and state code return token provider (= state token) p)
-         (if-let [identity (process-callback code p)]
-           (if on-success-handler
-             (on-success-handler (assoc identity :return return))
-             (authenticate (response/redirect return) identity))
-           (response/redirect "/unauthorized"))
-         (response/redirect "/unauthorized"))))))
+   (fn [{:keys [request] :as context}]
+     (assoc context :response
+            (if-let [[code provider-config return on-success-handler]
+                     (authorized? request providers)]
+              (if-let [identity (process-callback code provider-config)]
+                (if on-success-handler
+                  (on-success-handler context (assoc identity :return return))
+                  (authenticate (response/redirect return) identity))
+                (response/redirect "/unauthorized"))
+              (response/redirect "/unauthorized"))))))
